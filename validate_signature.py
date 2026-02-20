@@ -10,6 +10,7 @@ import io
 import json
 import warnings
 import logging
+import time
 from pathlib import Path
 
 # Forçar UTF-8 no stdout para Windows
@@ -40,10 +41,34 @@ except ImportError as e:
     sys.exit(0)
 
 
+# Cache global de certificados (carregado uma única vez)
+_CERT_CACHE = None
+_CERT_CACHE_LOCK = False
+
+
 def load_local_trust_roots():
     """Carrega certificados raiz ICP-Brasil da pasta local E do system trust store
     IMPORTANTE: Retorna lista de objetos asn1crypto.x509.Certificate (compatível com pyHanko)
+    USA CACHE: Carrega apenas uma vez e reutiliza em validações subsequentes
     """
+    global _CERT_CACHE, _CERT_CACHE_LOCK
+    
+    # Retornar cache se já carregado
+    if _CERT_CACHE is not None:
+        print(f"[CACHE] Usando {len(_CERT_CACHE)} certificados em cache", file=sys.stderr)
+        return _CERT_CACHE
+    
+    # Evitar carregamento múltiplo simultâneo
+    if _CERT_CACHE_LOCK:
+        import time
+        for _ in range(50):  # Esperar até 5 segundos
+            time.sleep(0.1)
+            if _CERT_CACHE is not None:
+                return _CERT_CACHE
+        return []
+    
+    print("[CACHE] Carregando certificados pela primeira vez...", file=sys.stderr)
+    _CERT_CACHE_LOCK = True
     trust_roots = []
     
     # Lista de diretórios para procurar certificados
@@ -92,6 +117,11 @@ def load_local_trust_roots():
     except Exception as e:
         # Se asn1crypto não estiver disponível, retornar vazio
         pass
+    
+    # Salvar no cache
+    _CERT_CACHE = trust_roots
+    _CERT_CACHE_LOCK = False
+    print(f"[CACHE] Carregados {len(trust_roots)} certificados únicos", file=sys.stderr)
     
     return trust_roots
 
@@ -498,6 +528,8 @@ def validate_pdf(pdf_path):
 def main():
     """Funcao principal"""
     
+    start_time = time.time()
+    
     try:
         # Verificar argumentos
         if len(sys.argv) < 2:
@@ -513,6 +545,11 @@ def main():
         
         # Validar
         result = validate_pdf(pdf_path)
+        
+        # Adicionar tempo de execução
+        elapsed_time = time.time() - start_time
+        result['execution_time'] = f"{elapsed_time:.2f}s"
+        print(f"[TIMING] Validação completa em {elapsed_time:.2f}s", file=sys.stderr)
         
         # Retornar resultado como JSON (sempre ASCII-safe para evitar problemas de encoding)
         print(json.dumps(result, ensure_ascii=False, indent=2))
