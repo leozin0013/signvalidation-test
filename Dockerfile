@@ -26,36 +26,30 @@ RUN npm run build
 # Instalar dependências Python (--break-system-packages é seguro em containers Docker)
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-# Baixar cadeia completa de certificados Gov.br (RAIZ + intermediárias + finais)
+# Baixar TODOS os certificados da ICP-Brasil (~324 certificados)
+# Inclui: todas ACs (ativas e expiradas), certificados para validar CRLs, cadeia completa
 RUN mkdir -p /app/certs && \
-    echo "Baixando certificados ICP-Brasil RAIZ..." && \
-    cd /app/certs && \
-    curl -sS -o ICP-Brasilv2.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv2.crt || true && \
-    curl -sS -o ICP-Brasilv5.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv5.crt || true && \
-    curl -sS -o ICP-Brasilv10.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv10.crt || true && \
-    curl -sS -o ICP-Brasilv11.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv11.crt || true && \
-    curl -sS -o ICP-Brasilv12.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv12.crt || true && \
-    curl -sS -o ICP-Brasilv13.crt http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv13.crt || true && \
-    echo "Baixando cadeia Gov.br completa..." && \
-    curl -sS -o Cadeia_GovBr-der.p7b http://repo.iti.br/docs/Cadeia_GovBr-der.p7b || true && \
-    echo "Extraindo certificados do bundle Gov.br..." && \
-    python3 /app/download_govbr_chain.py || true && \
+    echo "Baixando todos os certificados ICP-Brasil..." && \
+    python3 /app/download_all_icpbrasil_certs.py && \
     echo "Certificados instalados:" && \
-    ls -la /app/certs/
+    ls -la /app/certs/ | head -20 && \
+    echo "..." && \
+    echo "Total: $(ls /app/certs/*.crt /app/certs/*.cer 2>/dev/null | wc -l) certificados"
 
-# Instalar TODOS os certificados no system trust store (RAIZ + Gov.br)
-RUN echo "Convertendo certificados DER para PEM e instalando no system trust store..." && \
-    for cert in /app/certs/*.crt; do \
+# Instalar TODOS os certificados no system trust store
+RUN echo "Convertendo e instalando certificados no system trust store..." && \
+    for cert in /app/certs/*.crt /app/certs/*.cer; do \
         if [ -f "$cert" ]; then \
-            filename=$(basename "$cert" .crt); \
+            filename=$(basename "$cert"); \
+            filename_noext="${filename%.*}"; \
             # Tentar converter DER para PEM (se já for PEM, openssl ignora o erro); \
-            openssl x509 -inform DER -in "$cert" -out "/usr/local/share/ca-certificates/$filename.crt" 2>/dev/null || \
-            openssl x509 -inform PEM -in "$cert" -out "/usr/local/share/ca-certificates/$filename.crt" 2>/dev/null || \
-            cp "$cert" "/usr/local/share/ca-certificates/$filename.crt"; \
+            openssl x509 -inform DER -in "$cert" -out "/usr/local/share/ca-certificates/$filename_noext.crt" 2>/dev/null || \
+            openssl x509 -inform PEM -in "$cert" -out "/usr/local/share/ca-certificates/$filename_noext.crt" 2>/dev/null || \
+            cp "$cert" "/usr/local/share/ca-certificates/$filename_noext.crt"; \
         fi; \
     done && \
     update-ca-certificates && \
-    echo "Certificados do sistema atualizados."
+    echo "System trust store atualizado: $(ls /usr/local/share/ca-certificates/*.crt 2>/dev/null | wc -l) certificados instalados."
 
 # Criar diretório de uploads
 RUN mkdir -p uploads

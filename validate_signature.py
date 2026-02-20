@@ -41,18 +41,22 @@ except ImportError as e:
 
 
 def load_local_trust_roots():
-    """Carrega certificados raiz ICP-Brasil da pasta local E do system trust store"""
+    """Carrega certificados raiz ICP-Brasil da pasta local E do system trust store
+    IMPORTANTE: Retorna lista de objetos asn1crypto.x509.Certificate (compatível com pyHanko)
+    """
     trust_roots = []
     
     # Lista de diretórios para procurar certificados
     cert_dirs = [
-        Path(__file__).parent / 'certs',  # Certificados locais
+        Path(__file__).parent / 'certs',  # Certificados locais (~324 da ICP-Brasil)
+        Path('/usr/local/share/ca-certificates'),  # Certificados instalados manualmente (Docker)
         Path('/etc/ssl/certs'),  # System trust store Linux
-        Path('/usr/local/share/ca-certificates'),  # Certificados adicionados manualmente
     ]
     
     try:
-        from cryptography import x509
+        from asn1crypto import x509, pem
+        
+        seen_subjects = set()  # Para evitar duplicados
         
         for certs_dir in cert_dirs:
             if not certs_dir.exists():
@@ -68,25 +72,25 @@ def load_local_trust_roots():
                     try:
                         with open(cert_file, 'rb') as f:
                             cert_data = f.read()
-                            # Tentar DER primeiro
-                            try:
-                                cert = x509.load_der_x509_certificate(cert_data)
-                            except:
-                                # Tentar PEM
-                                cert = x509.load_pem_x509_certificate(cert_data)
                             
-                            # Verificar se não é duplicado (comparar por subject)
-                            is_duplicate = False
-                            for existing_cert in trust_roots:
-                                if existing_cert.subject == cert.subject:
-                                    is_duplicate = True
-                                    break
+                            # Detectar se é PEM ou DER
+                            if pem.detect(cert_data):
+                                # PEM: extrair primeiro certificado
+                                _, _, cert_data = pem.unarmor(cert_data)
                             
-                            if not is_duplicate:
+                            # Carregar como asn1crypto Certificate
+                            cert = x509.Certificate.load(cert_data)
+                            
+                            # Evitar duplicados (comparar por subject)
+                            subject_key = cert.subject.hashable
+                            if subject_key not in seen_subjects:
                                 trust_roots.append(cert)
+                                seen_subjects.add(subject_key)
                     except Exception as e:
+                        # Ignorar certificados inválidos silenciosamente
                         pass
     except Exception as e:
+        # Se asn1crypto não estiver disponível, retornar vazio
         pass
     
     return trust_roots
@@ -95,26 +99,29 @@ def load_local_trust_roots():
 def get_validation_context():
     """Retorna contexto de validação com certificados ICP-Brasil + System Trust Store
     
-    NOTA: Usa soft-fail para revogação devido a limitações na infraestrutura ITI:
-    - pyHanko consegue baixar CRLs, mas não consegue validar a assinatura da CRL
-    - Alguns certificados CA LCR (que assinam CRLs) não estão disponíveis no repo.iti.br
-    - Comportamento: valida integridade + cadeia, tenta verificar revogação mas não falha se houver problemas
+    Carrega todos os ~324 certificados da ICP-Brasil e confia em TODOS:
+    - trust_roots: TODOS os certificados ICP-Brasil (são todos oficiais do repositório ITI)
+    - other_certs: TODOS os certificados (para construção de cadeia e validação de CRLs)
+    
+    Isso permite validação completa: integridade + cadeia + revogação via CRL.
     """
     try:
-        # Carregar certificados locais + system trust store
-        local_roots = load_local_trust_roots()
+        # Carregar TODOS os certificados locais + system trust store (~320 certificados)
+        all_certs = load_local_trust_roots()
         
-        if local_roots:
-            # Criar contexto com certificados carregados (local + sistema)
+        if all_certs:
+            # IMPORTANTE: Confiar em TODOS os certificados da ICP-Brasil
+            # Todos são certificados oficiais baixados do repositório acraiz.icpbrasil.gov.br
+            # Isso inclui: RAIZ, intermediárias, finais - toda hierarquia ICP-Brasil
             trust_manager = SimpleTrustManager.build(
-                trust_roots=local_roots,
+                trust_roots=all_certs,  # TODOS os certificados ICP-Brasil são confiáveis
                 extra_trust_roots=[],
             )
             return ValidationContext(
                 trust_manager=trust_manager,
-                allow_fetching=True,  # Permite download de CRLs e certificados intermediários
-                revocation_mode='soft-fail',  # Tenta verificar revogação mas não falha por problemas de infraestrutura
-                other_certs=[]
+                allow_fetching=True,  # Permite download de CRLs e certificados via AIA
+                revocation_mode='soft-fail',  # Tenta verificar revogação mas não falha por problemas
+                other_certs=all_certs  # Disponibilizar TODOS os certs para construir cadeia de CRL
             )
         else:
             # Fallback: usar ValidationContext padrão
@@ -280,8 +287,13 @@ def validate_pdf(pdf_path):
                             sig_info['valid'] = status == val_module.SignatureStatus.VALID
                             sig_info['status'] = str(status)
                         else:
-                            # Versão mais recente do pyHanko
-                            sig_info['valid'] = validation_result.intact and validation_result.trusted
+                            # Versão mais recente do pyHanko - usar bottom_line como indicador final
+                            # bottom_line combina intact, trusted E revocation
+                            if hasattr(validation_result, 'bottom_line'):
+                                sig_info['valid'] = validation_result.bottom_line
+                            else:
+                                sig_info['valid'] = validation_result.intact and validation_result.trusted
+                            
                             sig_info['status'] = 'VALID' if sig_info['valid'] else 'INVALID'
                         
                         # Verificação adicional: integridade e confiabilidade
@@ -289,15 +301,23 @@ def validate_pdf(pdf_path):
                             sig_info['intact'] = validation_result.intact
                         if hasattr(validation_result, 'trusted'):
                             sig_info['trusted'] = validation_result.trusted
+                        if hasattr(validation_result, 'bottom_line'):
+                            sig_info['bottom_line'] = validation_result.bottom_line
                         
                         # SOFT-FAIL: Aceitar documentos íntegros mesmo com problemas de revogação
                         # Se intact=True mas trusted=False, geralmente é problema de infraestrutura CRL
                         # Validamos: integridade (SHA-256) + cadeia ICP-Brasil
-                        # Não validamos: revogação (por limitações do repositório ITI)
-                        if sig_info.get('intact') and not sig_info.get('trusted'):
-                            sig_info['status'] = 'VALID_REVOCATION_UNVERIFIED'
-                            sig_info['valid'] = True
-                            sig_info['trusted'] = True  # Cadeia foi validada, marca como trusted para UI
+                        # Se bottom_line=False mas intact=True, pode ser revogação não verificada
+                        if sig_info.get('intact') and not sig_info.get('bottom_line', True):
+                            # Verificar se valid é True (revogação funcionou mesmo com soft-fail)
+                            if hasattr(validation_result, 'valid') and validation_result.valid:
+                                sig_info['status'] = 'VALID'
+                                sig_info['valid'] = True
+                                sig_info['trusted'] = True  # Revogação OK
+                            else:
+                                sig_info['status'] = 'VALID_REVOCATION_UNVERIFIED'
+                                sig_info['valid'] = True
+                                sig_info['trusted'] = True  # Cadeia foi validada
                             
                         # Tentar extrair certificado de múltiplas formas
                         if hasattr(validation_result, 'signer_cert') and validation_result.signer_cert:

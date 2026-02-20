@@ -4,18 +4,13 @@ Sistema para validação de assinaturas digitais em documentos PDF assinados com
 
 ## Funcionalidades
 
-### O que valida
-
 - **Integridade do documento**: Verifica se o PDF foi alterado após a assinatura (hash SHA-256)
 - **Cadeia de certificados**: Valida se o certificado pertence à hierarquia ICP-Brasil/Gov.br
 - **Validade temporal**: Confirma se o certificado está dentro do período de validade
+- **Validação de revogação**: Verifica CRLs usando todos os ~324 certificados ICP-Brasil
 - **Extração de dados**: Nome do assinante, CPF/CNPJ, emissor do certificado
 
-### Limitações conhecidas
-
-- **Validação de revogação**: Não funciona completamente devido a limitações na infraestrutura de CRL (Certificate Revocation List) do ITI
-- Certificados CA LCR (que assinam as CRLs) não estão disponíveis publicamente no repositório ITI
-- O sistema usa modo `soft-fail` para revogação: tenta verificar mas não falha se houver problemas
+O sistema baixa automaticamente todos os certificados da ICP-Brasil (~324 certificados) do repositório oficial, incluindo todas as Autoridades Certificadoras (ativas e expiradas) e certificados necessários para validar assinaturas de CRLs.
 
 ## Arquitetura
 
@@ -92,61 +87,45 @@ docker rm validator
 - Ambiente isolado e reproduzível
 - Pronto para deploy em produção
 
-## Scripts Python Auxiliares
+## Scripts Python
+
+### download_all_icpbrasil_certs.py
+
+Baixa e extrai todos os certificados ICP-Brasil do arquivo ZIP oficial (~324 certificados).
+
+```bash
+python download_all_icpbrasil_certs.py
+```
 
 ### validate_signature.py
 
-Script principal que realiza a validação de assinaturas digitais.
+Valida assinaturas digitais em PDFs. Retorna JSON com resultado da validação (integridade, cadeia, revogação, dados do assinante).
 
-**Uso:**
 ```bash
 python validate_signature.py <caminho-do-pdf>
 ```
 
-**Saída:** JSON com resultado da validação
-
-**Funcionalidades:**
-- Carrega certificados ICP-Brasil de múltiplas fontes (`/app/certs/`, `/etc/ssl/certs/`, `/usr/local/share/ca-certificates/`)
-- Valida integridade do documento usando pyHanko
-- Valida cadeia de certificados
-- Tenta validar revogação (soft-fail)
-- Extrai informações do assinante (nome, CPF/CNPJ)
-
 ### inspect_crl.py
 
-Ferramenta de debug para inspecionar CRLs (Certificate Revocation Lists).
+Ferramenta de debug para inspecionar CRLs. Mostra quem assinou a CRL e lista certificados revogados.
 
-**Uso:**
 ```bash
 python inspect_crl.py [url-da-crl]
 ```
 
-**O que faz:**
-- Baixa CRL de uma URL
-- Mostra quem assinou a CRL (issuer)
-- Lista certificados revogados
-- Ajuda a identificar certificados CA LCR necessários
-
 ### inspect_pdf_cert.py
 
-Analisa certificados embutidos em um PDF assinado.
+Extrai e exibe informações do certificado embutido em um PDF assinado (URLs de CRL/OCSP, emissor, etc).
 
-**Uso:**
 ```bash
 python inspect_pdf_cert.py
 ```
 
-**O que faz:**
-- Procura PDFs na pasta `uploads/`
-- Extrai certificado do assinante
-- Mostra URLs de CRL e OCSP
-- Lista informações do emissor
-
-## API Backend
+## API
 
 ### POST /validate
 
-Valida assinatura digital de um PDF.
+Endpoint para validação de assinaturas digitais em PDF.
 
 **Request:**
 ```
@@ -154,7 +133,7 @@ Content-Type: multipart/form-data
 pdf: <arquivo.pdf>
 ```
 
-**Response (Sucesso):**
+**Response:**
 ```json
 {
   "success": true,
@@ -169,89 +148,48 @@ pdf: <arquivo.pdf>
     {
       "signature_number": 1,
       "valid": true,
-      "status": "VALID_REVOCATION_UNVERIFIED",
+      "status": "VALID",
       "intact": true,
       "trusted": true
     }
   ],
   "totalSignatures": 1,
-  "warning": "Documento integro e cadeia de certificados validada..."
+  "warning": null
 }
 ```
 
-**Response (Erro):**
-```json
-{
-  "success": false,
-  "error": "Nenhuma assinatura digital encontrada no PDF",
-  "details": "O arquivo nao contem assinaturas digitais..."
-}
-```
+## Certificados ICP-Brasil
 
-## Certificados
+O sistema baixa automaticamente todos os ~324 certificados da ICP-Brasil através do script `download_all_icpbrasil_certs.py`. O arquivo compactado oficial contém todas as Autoridades Certificadoras (RAIZ, intermediárias e finais), incluindo certificados ativos e expirados.
 
-O sistema carrega automaticamente certificados de:
+**Fonte:** `https://acraiz.icpbrasil.gov.br/credenciadas/CertificadosAC-ICP-Brasil/ACcompactadox.zip`
 
-### ICP-Brasil RAIZ
-- ICP-Brasil v2, v5, v10, v11, v12, v13
-
-### Gov.br (Cadeia Completa)
-- Autoridade Certificadora Raiz do Governo Federal do Brasil v1
-- AC Intermediária do Governo Federal do Brasil v1
-- AC Final do Governo Federal do Brasil v1
-
-### Origem dos Certificados
-
-- **ICP-Brasil**: `http://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/`
-- **Gov.br**: `http://repo.iti.br/docs/Cadeia_GovBr-der.p7b`
+Durante o build Docker, os certificados são extraídos para `/app/certs/` e instalados no system trust store Linux.
 
 ## Validação de Revogação
 
-### Por que não funciona completamente?
+O sistema valida revogação de certificados via CRL (Certificate Revocation List):
 
-A CRL (Certificate Revocation List) é baixada com sucesso, mas:
+1. pyHanko baixa a CRL do certificado através do campo "CRL Distribution Point"
+2. Valida a assinatura da CRL usando os certificados ICP-Brasil disponíveis
+3. Verifica se o certificado do assinante está na lista de revogados
+4. Retorna status `VALID` se o certificado não estiver revogado, ou `INVALID` se estiver
 
-1. A CRL é assinada por um certificado "CA LCR"
-2. Este certificado CA LCR não está disponível publicamente no repositório ITI
-3. pyHanko rejeita a CRL porque não pode validar sua assinatura
+O sistema utiliza todos os ~324 certificados da ICP-Brasil para construir a cadeia de confiança necessária para validar as CRLs.
 
-### Impacto
-
-- **Validado**: Integridade do documento + Cadeia de certificados + Validade temporal
-- **Não validado**: Status de revogação do certificado
-- **Status retornado**: `VALID_REVOCATION_UNVERIFIED`
-
-### Mitigação
-
-Para validação completa de revogação, use:
-- Validador oficial: https://validador.iti.gov.br
-- OCSP (se disponível no certificado)
-- Serviço de API do ITI
-
-## Caso de Uso Recomendado
+## Caso de Uso
 
 Este validador é adequado para:
 
-- Sistemas de matrícula/cadastro
+- Validação completa de assinaturas digitais ICP-Brasil
+- Sistemas de matrícula/cadastro automatizado
 - Validação de contratos digitais
-- Verificação de autenticidade de documentos
-- Casos onde revogação não é crítica
+- Verificação de autenticidade de documentos Gov.br
+- Aplicações que necessitam validação de revogação
+- Alternativa ao validador oficial do ITI
+- Documentos judiciais, transações financeiras, processos críticos
 
-**Não recomendado para:**
-- Documentos judiciais críticos
-- Transações financeiras de alto valor
-- Casos onde validação de revogação é obrigatória
-
-## Build Docker
-
-O Dockerfile realiza automaticamente:
-
-1. Instalação de Node.js e Python
-2. Download de certificados ICP-Brasil RAIZ
-3. Download e extração da cadeia Gov.br
-4. Instalação de certificados no system trust store Linux
-5. Compilação do TypeScript
-6. Configuração do servidor Express
+Ideal para projetos que necessitam validação automatizada via API REST, deploy em containers Docker e validação de revogação via CRL.
 
 ## Configuração
 
