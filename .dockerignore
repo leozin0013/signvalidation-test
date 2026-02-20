@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+dist
+uploads
+*.log
+.env
+.git
+.gitignore
+README.md
+*.md
+.vscode
+.DS_Store
+*.pdf
+__pycache__
+*.pyc
+.pytest_cache
