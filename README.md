@@ -8,7 +8,7 @@ Sistema para validação de assinaturas digitais em documentos PDF assinados com
 - **Cadeia de certificados**: Valida se o certificado pertence à hierarquia ICP-Brasil/Gov.br
 - **Validade temporal**: Confirma se o certificado está dentro do período de validade
 - **Validação de revogação**: Verifica CRLs usando todos os ~324 certificados ICP-Brasil
-- **Extração de dados**: Nome do assinante, CPF/CNPJ, emissor do certificado
+- **Extração de dados**: Nome do assinante, CPF/CNPJ, emissor do certificado, fingerprint SHA-256, serial number
 
 O sistema baixa automaticamente todos os certificados da ICP-Brasil (~324 certificados) do repositório oficial, incluindo todas as Autoridades Certificadoras (ativas e expiradas) e certificados necessários para validar assinaturas de CRLs.
 
@@ -142,7 +142,9 @@ pdf: <arquivo.pdf>
     "issuer": "AC Final do Governo Federal do Brasil v1",
     "cpf": "123.456.789-10",
     "not_before": "2025-11-13T00:33:09+00:00",
-    "not_after": "2026-11-13T00:33:09+00:00"
+    "not_after": "2026-11-13T00:33:09+00:00",
+    "fingerprint_sha256": "1A2B3C4D5E6F...",
+    "serial_number": "123ABC456DEF"
   },
   "validationResults": [
     {

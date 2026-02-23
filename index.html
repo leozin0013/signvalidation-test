@@ -357,6 +357,12 @@
                     if (data.signerInfo.issuer) {
                         details += `<div class="detail-item">Emissor: ${data.signerInfo.issuer}</div>`;
                     }
+                    if (data.signerInfo.fingerprint_sha256) {
+                        details += `<div class="detail-item">Fingerprint (SHA-256): <code style="font-size: 0.85em; word-break: break-all;">${data.signerInfo.fingerprint_sha256}</code></div>`;
+                    }
+                    if (data.signerInfo.serial_number) {
+                        details += `<div class="detail-item">Serial: ${data.signerInfo.serial_number}</div>`;
+                    }
                 }
                 
                 if (data.validationResults && data.validationResults.length > 0) {

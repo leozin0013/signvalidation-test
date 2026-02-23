@@ -248,6 +248,21 @@ def extract_cert_info(cert):
             info['not_after'] = cert.not_valid_after_utc.isoformat() if hasattr(cert, 'not_valid_after_utc') else cert.not_valid_after.isoformat()
         except Exception as e:
             info['validity_error'] = str(e)
+        
+        # Extrair fingerprint (impressão digital única do certificado)
+        try:
+            from cryptography.hazmat.primitives import hashes
+            # SHA-256 fingerprint
+            sha256_fp = cert.fingerprint(hashes.SHA256())
+            info['fingerprint_sha256'] = sha256_fp.hex().upper()
+        except Exception as e:
+            info['fingerprint_error'] = str(e)
+        
+        # Serial number do certificado (também é único)
+        try:
+            info['serial_number'] = hex(cert.serial_number)[2:].upper()
+        except Exception as e:
+            info['serial_error'] = str(e)
                 
     except Exception as e:
         info['extraction_error'] = str(e)
