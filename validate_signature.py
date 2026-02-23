@@ -213,27 +213,46 @@ def extract_cert_info(cert):
             # Procurar no subject alternative names
             try:
                 san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+                
                 for name in san_ext.value:
-                    name_str = str(name.value) if hasattr(name, 'value') else str(name)
-                    # Extrair CPF
-                    if 'CPF' in name_str.upper() or '2.16.76.1.3.1' in name_str:
-                        # Tentar extrair apenas os números
-                        import re
-                        cpf_match = re.search(r'(\d{11})', name_str)
-                        if cpf_match:
-                            cpf = cpf_match.group(1)
-                            info['cpf'] = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
-                        else:
-                            info['cpf'] = name_str
-                    # Extrair CNPJ
-                    elif 'CNPJ' in name_str.upper() or '2.16.76.1.3.3' in name_str:
-                        import re
-                        cnpj_match = re.search(r'(\d{14})', name_str)
-                        if cnpj_match:
-                            cnpj = cnpj_match.group(1)
-                            info['cnpj'] = f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}"
-                        else:
-                            info['cnpj'] = name_str
+                    # Processar OtherName (usado pela ICP-Brasil)
+                    if hasattr(name, 'type_id'):
+                        oid = name.type_id.dotted_string
+                        
+                        # OID 2.16.76.1.3.1 = CPF
+                        if oid == '2.16.76.1.3.1':
+                            try:
+                                # Decodificar bytes ASN.1
+                                raw_value = name.value
+                                # Remove tag OCTET STRING (\x04) e length, extrai string
+                                if isinstance(raw_value, bytes):
+                                    # Pular tag (\x04) e length (1 byte)
+                                    value_str = raw_value[2:].decode('latin1')
+                                    # Formato ICP-Brasil: DDMMYYYY (8 dígitos) + CPF (11 dígitos) + zeros
+                                    # CPF está entre posição 8 e 19
+                                    if len(value_str) >= 19:
+                                        cpf = value_str[8:19]
+                                        # Validar que são 11 dígitos
+                                        if cpf.isdigit() and len(cpf) == 11:
+                                            info['cpf'] = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
+                            except Exception as e:
+                                info['cpf_decode_error'] = str(e)
+                        
+                        # OID 2.16.76.1.3.3 = CNPJ
+                        elif oid == '2.16.76.1.3.3':
+                            try:
+                                raw_value = name.value
+                                if isinstance(raw_value, bytes):
+                                    value_str = raw_value[2:].decode('latin1')
+                                    # CNPJ tem 14 dígitos - extrair primeiros 14 dígitos encontrados
+                                    import re
+                                    cnpj_match = re.search(r'(\d{14})', value_str)
+                                    if cnpj_match:
+                                        cnpj = cnpj_match.group(1)
+                                        info['cnpj'] = f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}"
+                            except Exception as e:
+                                info['cnpj_decode_error'] = str(e)
+                        
             except x509.ExtensionNotFound:
                 pass
             except Exception as e:
